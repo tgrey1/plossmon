@@ -1,0 +1,82 @@
+#!/bin/bash
+# plossmon - Packet Loss Monitor
+# Copyright (C) GPLv3 2014 tgrey
+# http://www.gnu.org/licenses/gpl-3.0.html
+# Questions, comments, etc: https://github.com/tgrey1/plossmon
+# Or: tgrey1 <AT> gmail.com
+VERSION=.22
+
+COUNT=50 # How many packets to send each cycle
+WAIT=300 # Time in seconds between cycles
+HOSTS="4.2.2.1 4.2.2.2"
+
+# Logfile - defaults to ~/.plossmon.log
+LOGFILE="$HOME/.$(basename "$0").log"
+
+# Lockfile - defaults to ~/.plossmon.lock
+# Only used if sleepwatch is in path
+# Remove while running to trigger an update
+LOCKFILE="$HOME/.$(basename "$0").lock"
+
+##############################################################
+# END OF USER CONFIG SECTION
+##############################################################
+
+VERBOSE=0
+
+PIDLOCK=/tmp/$(basename "$0")-"$USER".pid
+if [ -e "$PIDLOCK" ]; then
+  PID=$(head -n 1 "$PIDLOCK")
+  if  ps -p "$PID" | grep $(basename "$0") ; then
+    echo $(basename "$0") already appears to be running for user \""$USER"\" \(pid "$PID"\)
+    echo If this is incorrect, remove the file "$PIDLOCK" and run again
+    exit 1
+  fi
+fi
+echo "$$" > "$PIDLOCK"
+
+function log {
+  if [ "$LOGFILE" ]; then
+    echo "$@" >> "$LOGFILE"
+  fi
+}
+
+function log_out {
+  log "$@"
+  echo "$@"
+}
+
+if [ "$1" == "verbose" ] || [ "$1" == "-v" ]; then
+  VERBOSE=1 && log_out "-- VERBOSE MODE --"
+fi
+
+if [ "$LOGFILE" ] && [ ! -e "$LOGFILE" ]; then
+  echo "Creating log file ($LOGFILE)..."
+  touch "$LOGFILE" 2>/dev/null || { unset LOGFILE; echo "Creating log file failed, logging disabled"; }
+fi
+
+ITERATION=0
+log_out "I:$ITERATION $(date) - Starting with hosts: $(echo "$HOSTS" | xargs | sed s/' '/', '/g) ($COUNT)"
+
+while [ true ]; do
+  while [ -e "$MUTEX" ]; do
+	  sleep 1
+  done
+  MUTEX=$(mktemp /tmp/$(basename "$0")-"$USER"-mutex.XXXXXX)
+  ITERATION=$(( ITERATION + 1 ))
+  for H in $HOSTS; do
+    { OUTPUT=$(ping -q -c $COUNT "$H" 2>/dev/null | grep -v '\-\-\-' | tail -n 2)
+    LOSS=$(echo "$OUTPUT" | xargs -n 1 | grep "%")
+    SENT=$(echo "$OUTPUT" | head -n 1 | cut -d " " -f 1)
+    RECEIVED=$(echo "$OUTPUT" | head -n 1 | cut -d " " -f 4)
+    LOST=$(( SENT - RECEIVED ))
+    OUTPUT="I:$ITERATION $(date) $H - $LOSS loss ($LOST of $SENT)"
+
+    if [ "$LOST" -ne 0 ] || [ $VERBOSE -eq 1 ]; then
+      log_out "$OUTPUT"
+    else
+      log "$OUTPUT"
+    fi } &
+  done | sort -k 8 && rm "$MUTEX" &
+  which sleepwatch >/dev/null 2>&1 && sleepwatch $WAIT "$LOCKFILE" || sleep $WAIT
+done
